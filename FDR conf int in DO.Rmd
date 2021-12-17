@@ -1,0 +1,106 @@
+---
+title: "FDR confidence interval estimation with Millstein-Volfson estimator"
+author: "Matt Mahoney"
+date: "12/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+The goal of this document is to introduce a small package of code to compute the Millstein-Volfson estimator for confidence intervals (CIs) for false discovery rates (FDRs) from QTL mapping experiments. I will assume that the reader has familiarity with the overall goals of FDR-based procedures and refer them to Millstein and Volfson (Front. Genetics, 2013) for all details.
+
+In the present context, the goal of FDR-based procedures is to set more permissive, but statisticlly rigorous, thresholds for putative QTLs. The price we pay for more liberal thresholds is a higher number of false positives among the superthreshold peaks. For QTL mapping, permutation-based null models allow straightfrward estimates of the expected number of false positives, i.e. the FDR. The major difficulty arises in putting a confidence interval around this expected value. The variance of the FDR estimator turns out to depend on the correlation structure of the tests in a non-trivial way that can dramatically increase the variance of the estimated FDR. In the QTL mapping context, this variance arises from tests correlated due to linkage; if one marker gets a LOD score above some threshold, then there is a high probability that adjacent markers will as well.
+
+Prior to work by Millstein and Volfson (herafter MV), Bradley Efron and John Storey independently published variance estimators for FDR that required either computing correlations among all pairs of variables or a costly second round of resampling. The innovation of Millstein and Volfson (hereafter MV) was to devise an FDR CI estimator that could be computed directly from the null test statistics alone, without any secondary expensive computation. 
+
+[Briefly, their approach is as follows, but I strongly recommend reading their paper. First, they modeled the positive counts in the null and true distributions as binomial or binomial-mixture distributions, respectively. Note that this assumes that these counts are from independent sampling, which is false for QTL mapping and has to be addressed in the following procedure. Next, by taking the logarithm of the estimated FDR, they could propagate the variance of counts using a fist-order Taylor expansion (i.e. the "delta method") to get an estimated variance of log(FDR). (They note that this variance estimator has the form of the variance of a log-odds ratio.) To overcome the independence assumption in the binomial counts model, they multiply the variance of the FDR by an overdisperion parameter, phi, that compares the permutation-to-permutation variance of the number of superthreshold counts to the expectation in the independent binomial model. Because these counts come in "clumps" due to linkage, the overdispersion parameter is > 1 and increases the variance of log(FDR). From the overdispersion estimated variance of log(FDR), they then back-transform with an exponential distribution to get a confidence interval for the FDR. The MV paper shows extensive simulation studies that their esitmator matches the Efron and Storey estimators, while retaining, at most, a conservative bias.]
+
+The essential (small) contribution of this work was to notice that all of the calculations in the MV estimator could be performed using mean and variance estimates of the empirical cumulative distribution functions (eCDFs) of the permutation null statistics. This dramatically drops the amount of memopry required compared to MV's R package 'fdrci', which requires a list of all test statistics for each permuation run. In contrast, our approach only saves the mean and variance of the eCDF for the null statistics, which can be computed online with the permutation tests. We have compared our code the the fdrci package and found near-complete agreement, save for small binning artifacts. We also found a bug in the fdrci package that the confidence level parameter in their main function cannot actually be changed, despite appearing to be passable as a parameter.
+
+In what follows, we show an example output using QTL mapping of insulin tAUC in a Diversity Outbred population as an example.
+
+## Run QTL scan for insulin tAUC
+Here is a QTL scan for insulin tAUC, showing a prominent peak on chr 11.
+
+```{r, echo=FALSE}
+
+library(qtl2)
+library(here)
+
+load(here("data", "attie_all_qtl_viewer_v10_04.20.2020.RData"))
+
+source(here("code", "source_all.R"))
+source_all(here("code"))
+
+addcovar = dataset.invivo$covar.matrix
+phys_data = dataset.invivo$data[ , c(1:6, 8, 10:14)]
+
+pheno = as.matrix(phys_data[ , "Ins_tAUC"])
+ovr_names = intersect(rownames(addcovar), rownames(pheno))
+
+genoprobs = genoprobs[ovr_names, ]
+pheno = pheno[ovr_names, , drop = FALSE]
+addcovar = addcovar[ovr_names, , drop = FALSE]
+
+```
+
+```{r, echo = FALSE}
+if(!file.exists(here("data", "scan1_out.RDS"))){
+  scan1_out = scan1(genoprobs, pheno, kinship = K, addcovar = addcovar)
+  saveRDS(file = here("data", "scan1_out.RDS"), object = scan1_out)
+}else{
+  scan1_out = readRDS(file = here("data", "scan1_out.RDS"))
+}
+
+plot(scan1_out, map, main = "Insulin tAUC")
+```
+
+## Compute MV estimator for FDR
+Here is an FDR summary plot. we compute the 95% confidence intervals for the FDR as a funciton of LOD threshold. The 'fdr_summarize' function outputs the classical genome-wide significance thresholds and FDR-based LOD thresholds, which are the lowest LOD score whose upper CI limit does not exceed the FDR threshold. For example, in the plot below, the LOD theshold of 4.53 has confidence interval completely below the 40% FDR line.
+
+```{r}
+
+# Set breaks for p-values at equally spaced LOD scores between 0 and 12
+nind = length(pheno)
+k = 8
+breaks = lod2p(seq(12, 0, -0.01), nind = nind, k = 8)
+
+# Compute null stats object from permutations
+nperm = 100
+if(!file.exists(here("data", "null_stats.RDS"))){
+  null_stats = scan1perm_stats(genoprobs, pheno, addcovar = addcovar, kinship = K, intcovar = NULL,
+                             nperm = nperm, breaks = breaks, scan1_out = scan1_out)
+  saveRDS(file = here("data", "null_stats.RDS"), object = null_stats)
+}else{
+  null_stats = readRDS(file = here("data", "null_stats.RDS"))
+}
+
+# Generate summary plot
+summary_thresholds = fdr_summarize(null_stats, fdr_cl = 0.95, geno_sig = c(0.01, 0.05), fdr_thresh = c(0.1, 0.2, 0.4), plot = TRUE, quartz = FALSE)
+
+summary_thresholds
+
+```
+
+
+## Lowering the bar for QTLs?
+Putting a stringent and a permissive threshold on the insulin tAUC peaks shows the difference between classical and FDR-based thresholds. The one peark above the red line is classically significant and strongly attested by the data. For the many small peaks above the orange line, 40% are estimated to be false discoveries, or rather the 95% confidence interval for the FDR at that threshold just overlaps 40% at the high end. Depending on you application, the high or low threshold may be more suitable. Certainly, from the perspective of validating a locus using expensive genetic engineering, the stringent threshold is overwhelmingly likely to be preferred. On the other hand, for applications where analysts have auxiliary data, such as gene expression or legacy associations, to augment genetic associations, a liberal threshold can potentially be tolerated. In any case, the MV estimator is readily computable from permutation data and produces plausible confidence intervals that appear neither too good to be true nor absurdly pessimistic. User beware!
+
+```{r}
+
+plot(scan1_out, map, main = "Insulin tAUC")
+abline(h = summary_thresholds["Genome-wide sig. 1%"], col = "red", lty = 1)
+abline(h = summary_thresholds["FDR 40%"], col = "darkorange", lty = 2)
+
+```
+
+
+
+
+
+
+
+
