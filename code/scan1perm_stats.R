@@ -8,7 +8,8 @@ scan1perm_stats = function(genoprobs, pheno, addcovar = NULL, kinship = NULL, in
   sq_ecdf = matrix(0, nrow = length(breaks) - 1, ncol = 1)
   min_p = matrix(0, nrow = nperm, ncol = 1)
   for(n in 1:nperm){
-    null_p = sample_perm_null(genoprobs, pheno, addcovar = addcovar, kinship = K, intcovar = intcovar)
+    null_p = sample_perm_null(genoprobs, pheno, addcovar = addcovar, 
+      kinship = kinship, intcovar = intcovar)
     
     # Compute eCDF data 
     curr_hist = hist(null_p, breaks = breaks, plot = FALSE)
